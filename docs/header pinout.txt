@@ -1,0 +1,31 @@
+//serial port 1
+gnd
+vcc
+rx
+tx
+rst
+
+//power connector
+vbat (charge when switched on)
+gnd
+vcc (3.3v only)
+
+//i2c port
+gnd
+vcc
+scl
+sda
+
+//spi, serial port 2 and custom io
+tx
+rx
+vcc
+gnd
+vcc
+io1
+io2
+gnd
+cs
+sck
+mosi
+miso

@@ -1,0 +1,37 @@
+adding an application:
+-(mark-A) increase menuoptionsnumber by 1 for each app
+-(mark-B) define the count of the app's options
+-(mark-C) add that definition to menulength array
+-(mark-D) add an enum with app's name
+-(mark-E) add app's name to menuoptiontitles string array
+
+-(mark-F) add a case for the app in menulength mapping routine when menus change
+-(mark-G) add a case for the app to optionselect switch in "apps" menu, in menuselect switch for menu navigation, increase below case's number if needed
+-(mark-H) add a case for the app's code in main menuselect switch
+-(mark-I) add a case for the app's graphics in the updatescreen routine in menuselect switch
+
+app interface with sidepanel example:
+
+/*put this inside */
+if(sidepanelenable) { //only while sidepanel is open
+  if(b0) {
+    menuselect = apps__; //go to apps
+    sidepanelenable = 0; //close sidepanel
+  }
+  if(b1 || b2 || b3 || b4) {
+    sidepanelenable = 0; //close sidepanel
+  }
+} else { //rest of code
+  if(b3) { //open sidepanel
+    if(!blockmenunavigation) { //dont open panel while changing parameters
+      sidepanelenable = 1; //open sidepanel
+    }
+  }
+  switch(optionselect) {
+	/*select options*/
+    case 0:
+        
+      break;
+  }
+  //non menu related code here
+}
