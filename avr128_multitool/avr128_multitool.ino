@@ -1,8 +1,12 @@
-//////////////////
-/*pocsag encoder*/
-//////////////////
+//////////////
+/*i2c module*/
+//////////////
+/*AVR128DB48*/
+/*32mhz*/
+/*optiboot @ serial2alt*/
 
-#include <avr/sleep.h>
+#include <MCP7940.h>
+MCP7940_Class MCP7940;
 
 #include <Pocsag.h>
 Pocsag pocsag;
@@ -36,7 +40,8 @@ U8G2_ST7567_OS12864_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ PIN_PB5, /* dc=*/ PIN_PB3
 
 SX1276 rfm95 = new Module(PIN_PC0, PIN_PC2, PIN_PD6/*unused*/, PIN_PD7/*unused*/);
   
-#define DR(port, pin) !((port >> pin) & 0b00000001) //fast pin reading
+#define DRN(port, pin) ((port >> pin) & 0b00000001) //fast pin reading normal
+#define DR(port, pin) !((port >> pin) & 0b00000001) //fast pin reading for pullup
 
 #define button0(state) if(DR(PORTD.IN, 0) == HIGH && DR(PORTD.IN, 0) != state) { statebuffer = 1; } else { statebuffer = 0; }  state = DR(PORTD.IN, 0);
 #define button1(state) if(DR(PORTD.IN, 1) == HIGH && DR(PORTD.IN, 1) != state) { statebuffer = 1; } else { statebuffer = 0; }  state = DR(PORTD.IN, 1);
@@ -60,6 +65,7 @@ SX1276 rfm95 = new Module(PIN_PC0, PIN_PC2, PIN_PD6/*unused*/, PIN_PD7/*unused*/
 #define rda5807radiooptionsnumber 4
 #define si5351optionsnumber 3
 #define pageroptionsnumber 8
+#define rfm95receiveoptionsnumber 4
 
 #define serialportswap 1 //1 - swapped
 
@@ -126,7 +132,8 @@ uint8_t menulength[] = { //(mark-C)
   serialconfigoptionsnumber,
   rda5807radiooptionsnumber,
   si5351optionsnumber,
-  pageroptionsnumber
+  pageroptionsnumber,
+  rfm95receiveoptionsnumber
 };
 uint8_t menulengthselect;
 bool halfmenu;
@@ -230,11 +237,13 @@ float gpsdirection;
 bool screenblink;
 uint32_t screenblinkmillis;
 
+/*RDA5807 fm radio*/
 float radiofrequency = 88.1;
 uint8_t radiovolume = 15;
 uint8_t radioosc = CLOCK_12M;
 bool radioosctype = OSCILLATOR_TYPE_REFCLK;
 
+/*si5351 vfo*/
 float vfofrequency = 50.0;
 uint8_t vfodrive;
 uint8_t vfopresetselect;
@@ -268,7 +277,7 @@ float vfopresets[] = {
 
 #define vfopresetsnumber sizeof(vfopresets) / 4
 
-
+/*pocsag pager*/
 #define poc_fskport PORTC
 #define poc_fskportbit 1
 #define poc_fskpin PIN_PC1
@@ -290,7 +299,20 @@ bool poc_startrtransmit;
 uint32_t poc_currentmillistransmit;
 bool poc_keybenable;
 
+/*rfm95 fsk receiver*/
+#define rfm95fsk_fskport PORTC
+#define rfm95fsk_fskportbit 1
+#define rfm95fsk_fskpin PIN_PC1
+float rfm95fsk_freq = 433.92;
+bool rfm95fsk_listen;
+float rfm95fsk_dev = 1.5;
+uint8_t rfm95fsk_freqcursor;
+float rfm95fsk_rssi;
+uint16_t rfm95fsk_rssitimer;
+uint16_t rfm95fsk_bitrate = 300;
 
+
+/*the rest*/
 //char lettersrow1[21] = {'1','2','3','4','5','6','7','8','9','0',    '!','@','#','$','%','^','&','*','(',')'}; //(10*2)+1
 //char lettersrow2[21] = {'q','w','e','r','t','y','u','i','o','p',    'Q','W','E','R','T','Y','U','I','O','P'}; //(10*2)+1
 //char lettersrow3[21] = {'a','s','d','f','g','h','j','k','l',';',    'A','S','D','F','G','H','J','K','L',':'}; //(10*2)+1
@@ -421,6 +443,13 @@ void setup() {
 //  rfm95.forceLDRO(0); //low data rate optimization off
 
 //  tone(PIN_PC4, 1000);
+
+  MCP7940.begin();
+  MCP7940.deviceStart();
+  MCP7940.setBattery(1); //enable battery backup
+  /*year, month, day, hour, minute*/
+//  MCP7940.adjust(DateTime(2022, 10, 26, 8, 41, 0));  // Adjust the RTC date/time
+
 
   windowanim = 8; //reset animation
   lineanim = 8; //reset animation
@@ -664,6 +693,9 @@ void loop() {
       case pager__: //pager
         menulengthselect = 6;
         break;
+      case rfm95receive__:
+        menulengthselect = 7;
+        break;
     }
   }
   lastmenuselect = menuselect;
@@ -699,7 +731,8 @@ void loop() {
             break;
           case 4: //rfm95 receive
             menuselect = rfm95receive__; //rfm95 receive
-            initrfm95();
+            rfm95.beginFSK(rfm95fsk_freq, 300, rfm95fsk_dev, 125.0, 17, 0, false);
+//            initrfm95();
             break;
           case 5: //rfm95 configurator
             menuselect = rfm95configurator__; //rfm95 configurator
@@ -887,10 +920,121 @@ void loop() {
         }
       }
       break;
-    case rfm95receive__: //rfm95 receive
-      if(rfm95.receive(rfm95recvtext) == RADIOLIB_ERR_NONE) { //needs fixing
-        port1->println((char*)rfm95recvtext);
-        rfm95recvmsgs(rfm95recvtext, sizeof(rfm95recvtext), rfm95recvtextptr);
+//    case rfm95receive__: //rfm95 receive
+//      if(rfm95.receive(rfm95recvtext) == RADIOLIB_ERR_NONE) { //needs fixing
+//        port1->println((char*)rfm95recvtext);
+//        rfm95recvmsgs(rfm95recvtext, sizeof(rfm95recvtext), rfm95recvtextptr);
+//      }
+//      break;
+    case rfm95receive__:
+      if(sidepanelenable) { //only while sidepanel is open
+        if(b0) {
+          menuselect = apps__; //go to apps
+          sidepanelenable = 0; //close sidepanel
+        }
+        if(b1 || b2 || b3 || b4) {
+          sidepanelenable = 0; //close sidepanel
+        }
+      } else { //rest of code
+        if(b3) { //open sidepanel
+          if(!blockmenunavigation) { //dont open panel while changing parameters
+            sidepanelenable = 1; //open sidepanel
+          }
+        }
+        if(enter) {
+          blockmenunavigation = !blockmenunavigation;
+        }
+        switch(optionselect) {
+        /*select options*/
+          case 0: //change frequency
+            if(blockmenunavigation) { //while in option
+              manipulatefrequency(rfm95fsk_freq, rfm95fsk_freqcursor, 7);
+              if(globalbuttons) {
+                rfm95.setFrequency(rfm95frequency);
+              }
+            }
+            break;
+          case 1: //change deviation
+            if(blockmenunavigation) { //while in option
+              if(up || right) {
+                rfm95fsk_dev += 0.1;
+              }
+              if(down || left) {
+                rfm95fsk_dev -= 0.1;
+              }
+            }
+            break;
+          case 2: //change bitrate
+            if(blockmenunavigation) { //while in option
+              if(up || right) {
+                rfm95fsk_bitrate += 10;
+              }
+              if(down || left) {
+                rfm95fsk_bitrate -= 10;
+              }
+              if(globalbuttons) {
+                rfm95.setBitRate(rfm95fsk_bitrate);
+              }
+            }
+            break;
+          case 3: //toggle fsk listening
+            if(blockmenunavigation) { //while in option
+              if(up || down || left || right) {
+                rfm95fsk_listen = !rfm95fsk_listen;
+                if(rfm95fsk_listen) {
+                  rfm95.receiveDirect();
+                } else {
+//                  rfm95.standby();
+                }
+              }
+            }
+            break;
+        }
+        //non menu related code here
+        if(rfm95fsk_listen) {
+          if(DRN(PORTC.IN, 1)) { //output signal to speaker
+            PORTC.OUTSET = 0b00000001 << 4; //bit set
+          } else {
+            PORTC.OUTCLR = 0b00000001 << 4; //bit clear
+          }
+        }
+//        rfm95fsk_rssitimer++;
+//        if(rfm95fsk_rssitimer > 255) {
+//          rfm95fsk_rssitimer = 0; //reset
+//          rfm95fsk_rssi = rfm95.getRSSI();
+//          updatescreen = 1;
+//        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
       }
       break;
     case rfm95configurator__: //rfm95 configurator
@@ -1537,21 +1681,6 @@ void loop() {
           }
         }
       }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      
       break;
     case nmeaparser__: //nmea parser
       if(sidepanelenable) {
@@ -1690,9 +1819,40 @@ void loop() {
         keyboardscreen(writemsgbuffer, sizeof(writemsgbuffer), writemsgbufferptr);
         break;
       case rfm95receive__: //rfm95 receive
-//        rfm95recvscreen();
-        u8g2.drawStr(0, 7, rfm95recvtext);
+//        u8g2.drawStr(0, 7, "rfm95 fsk receiver");
+        displayfrequency(rfm95fsk_freq, rfm95fsk_freqcursor, 8, optionselect == 0, 7);
+        u8g2.setCursor(0, 8*2); u8g2.print("dev: "); u8g2.print(rfm95fsk_dev); u8g2.print("KHz");
+        u8g2.setCursor(0, 8*3); u8g2.print("bitrate: "); u8g2.print(rfm95fsk_bitrate);
+        u8g2.setCursor(0, 8*4); u8g2.print("listen: "); u8g2.print(rfm95fsk_listen ? "yes" : "no");
+
+        u8g2.setCursor(0, 8*8); u8g2.print("rssi: "); u8g2.print(rfm95fsk_rssi, 2);
+        
+        u8g2.setDrawColor(2);
+        if(menuanimdirection) {
+          u8g2.drawBox(0, (lineselect*8)+lineanim, 128, 8); //selection box
+        } else {
+          u8g2.drawBox(0, ((lineselect*8)-7)+(8-lineanim), 128, 8); //selection box
+        }
+        u8g2.setDrawColor(1);
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
         break;
+//      case rfm95receive__: //rfm95 receive
+////        rfm95recvscreen();
+//        u8g2.drawStr(0, 7, rfm95recvtext);
+//        break;
       case rfm95configurator__: //rfm95 configurator
         u8g2.setCursor(62, 7); u8g2.print(rfm95frequency, 3);
         u8g2.setCursor(86, 15); (rfm95contmode ? u8g2.print("On") : u8g2.print("Off"));
@@ -1913,16 +2073,6 @@ void loop() {
         } else { //while keyboard is opened
           keyboardscreen(poc_msg, sizeof(poc_msg), poc_msgptr);
         }
-
-
-
-
-
-
-
-
-
-        
         break;
       case nmeaparser__: //nmea parser
         nmeascreen();
@@ -1987,6 +2137,20 @@ void desktopscreen() {
   u8g2.setCursor(0, 7);
   u8g2.print(battlvl, 2);
   u8g2.print('v');
+
+  u8g2.setCursor(95, 7);
+  DateTime now = MCP7940.now();
+  if(now.hour() < 10) {
+    u8g2.print('0');
+  }
+  u8g2.print(now.hour()); 
+  u8g2.print(':');
+  if(now.minute() < 10) {
+    u8g2.print('0');
+  }
+  u8g2.print(now.minute());
+  u8g2.setCursor(32, 7);
+  u8g2.print(now.day()); u8g2.print('/'); u8g2.print(now.month()); u8g2.print('/'); u8g2.print(now.year() - 2000);
 }
 
 void menuscreen(String *titles) {
@@ -2086,6 +2250,9 @@ void sidepanelspopup() {
         }
         break;
       case serialconfigurator__: //serial configurator
+        u8g2.drawStr(68+sidepanelsanim_, 10, "Exit");
+        break;
+      case rfm95receive__:
         u8g2.drawStr(68+sidepanelsanim_, 10, "Exit");
         break;
       case rfm95configurator__: //rfm95 configurator
@@ -2678,4 +2845,115 @@ void pager_init() {
   pinMode(poc_fskpin, OUTPUT);
 
 //  rfm95.beginFSK(poc_freq, 1.2, poc_dev, 125.0, 17, 0, false); //150.2083 //150.175
+}
+
+void displayfrequency(float frequency, uint8_t cursor, uint8_t height, bool activerow, uint8_t range) {
+  u8g2.setCursor(0, height); u8g2.print("Frequency: "); u8g2.print(frequency, range-3);
+  if(blockmenunavigation && activerow) { //the row in which the option is on
+    uint8_t cursorpos;
+    switch(cursor) {
+      case 0:
+        cursorpos = 0;
+        break;
+      case 1:
+        cursorpos = 6;
+        break;
+      case 2:
+        cursorpos = 12;
+        break;
+      case 3:
+        cursorpos = 24;
+        break;
+      case 4:
+        cursorpos = 30;
+        break;
+      case 5:
+        cursorpos = 36;
+        break;
+      case 6:
+        cursorpos = 42;
+        break;
+      case 7:
+        cursorpos = 48;
+        break;
+    }
+    if(frequency >= 1000.0) {
+      cursorpos += 6; //offset cursor when value is above 1000
+    }
+    u8g2.setDrawColor(2);
+    u8g2.drawBox(66+cursorpos, 0, 6, 8); //selection box
+    u8g2.setDrawColor(1);
+  }
+}
+
+void manipulatefrequency(float &frequency, uint8_t &cursor_, uint8_t range) {
+  range -= 1;
+  if(left) {
+    cursor_--;
+    if(cursor_ == 255) {
+      cursor_ = range; //loop around
+    }
+  }
+  if(right) {
+    cursor_++;
+    if(cursor_ > range) {
+      cursor_ = 0; //loop around
+    }
+  }
+  if(up) {
+    switch(cursor_) {
+      case 0:
+        frequency += 100.0;
+        break;
+      case 1:
+        frequency += 10.0;
+        break;
+      case 2:
+        frequency += 1.0;
+        break;
+      case 3:
+        frequency += 0.1;
+        break;
+      case 4:
+        frequency += 0.01;
+        break;
+      case 5:
+        frequency += 0.001;
+        break;
+      case 6:
+        frequency += 0.0001;
+        break;
+      case 7:
+        frequency += 0.00001;
+        break;
+    }
+  }
+  if(down) {
+    switch(cursor_) {
+      case 0:
+        frequency -= 100.0;
+        break;
+      case 1:
+        frequency -= 10.0;
+        break;
+      case 2:
+        frequency -= 1.0;
+        break;
+      case 3:
+        frequency -= 0.1;
+        break;
+      case 4:
+        frequency -= 0.01;
+        break;
+      case 5:
+        frequency -= 0.001;
+        break;
+      case 6:
+        frequency -= 0.0001;
+        break;
+      case 7:
+        frequency -= 0.00001;
+        break;
+    }
+  }
 }
